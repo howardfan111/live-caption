@@ -99,7 +99,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   const board = $("board"), lines = $("lines"), notice = $("notice");
 
   const SILENCE_MS = 700; 
-  const CHUNK_WORDS = 7;     // translate after this many words even if the sentence is not finished
+  const PAUSE_MS = 1800;     // a pause this long ends the sentence
+  const CHUNK_WORDS = 6;     // translate after this many words even if the sentence is not finished
     // commit a phrase after this long without new words
   const MAX_CHARS = 450;     // the translation service takes about 500 bytes per request
 
@@ -137,16 +138,14 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     if (stick) scrollDown();
   }
 
-  function addPair(en) {
+  function addPair() {
     dropExample();
-    const stick = nearBottom();
     const pair = document.createElement("div"); pair.className = "pair";
-    const enEl = document.createElement("div"); enEl.className = "en"; enEl.textContent = en;
+    const enEl = document.createElement("div"); enEl.className = "en";
     const zhEl = document.createElement("div"); zhEl.className = "zh wait"; zhEl.textContent = "翻譯中…";
     pair.append(enEl, zhEl);
     if (liveEl && liveEl.parentNode) lines.insertBefore(pair, liveEl); else lines.append(pair);
-    if (stick) scrollDown();
-    return zhEl;
+    return { en: "", enEl, zhEl, dirty: false, hasZh: false };
   }
 
   // ---------- translation (MyMemory, free, no key) ----------
@@ -175,41 +174,57 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     return out;
   }
 
-  const queue = [];
+  // One row per sentence. As more of the sentence arrives, the whole sentence so far is
+  // translated again and the Chinese is replaced, so the meaning is corrected with context.
+  const rows = [];
+  let current = null;       // the sentence still being spoken
   let busy = false;
+  let quotaOut = false;
+
   async function pump() {
     if (busy) return;
-    const job = queue.shift();
-    if (!job) return;
+    const row = rows.find((r) => r.dirty);
+    if (!row) return;
     busy = true;
-    const { en, zhEl } = job;
-    zhEl.className = "zh wait"; zhEl.textContent = "翻譯中…";
+    row.dirty = false;
+    const en = row.en;
+    const zhEl = row.zhEl;
+    if (!row.hasZh) { zhEl.className = "zh wait"; zhEl.textContent = "翻譯中…"; }
     try {
+      if (quotaOut) throw { code: "quota" };
       const parts = [];
       for (const chunk of splitChunks(en)) parts.push(await translateChunk(chunk));
       const stick = nearBottom();
-      zhEl.className = "zh"; zhEl.textContent = parts.join("");
+      zhEl.className = "zh"; zhEl.textContent = parts.join(""); row.hasZh = true;
       if (stick) scrollDown();
     } catch (e) {
-      zhEl.className = "zh err";
       if (e && e.code === "quota") {
-        zhEl.textContent = "今天的免費翻譯額度用完了。";
+        quotaOut = true;
+        if (!row.hasZh) { zhEl.className = "zh err"; zhEl.textContent = "今天的免費翻譯額度用完了。"; }
         showNotice("免費翻譯服務今天的額度已用完，目前只會顯示英文原文，明天會自動恢復。");
-      } else {
-        zhEl.textContent = navigator.onLine === false ? "沒有網路，無法翻譯。" : "翻譯失敗。";
+      } else if (!row.dirty) {   // a newer request for this sentence will retry by itself
+        if (!row.hasZh) { zhEl.className = "zh err"; zhEl.textContent = navigator.onLine === false ? "沒有網路，無法翻譯。" : "翻譯失敗。"; }
         const retry = document.createElement("button");
         retry.type = "button"; retry.textContent = "重試";
-        retry.onclick = () => { queue.push({ en, zhEl }); pump(); };
-        zhEl.append(retry);
+        retry.onclick = () => { retry.remove(); row.dirty = true; pump(); };
+        if (!row.hasZh) zhEl.append(retry);
       }
     } finally { busy = false; pump(); }
   }
 
-  function commit(text) {
+  // Add newly heard words to the sentence in progress and translate the sentence again.
+  function commit(text, endsSentence) {
     text = (text || "").replace(/\s+/g, " ").trim();
-    if (!text) return;
-    queue.push({ en: text, zhEl: addPair(text) });
-    pump();
+    if (text) {
+      const stick = nearBottom();
+      if (!current || current.en.length + text.length + 1 > MAX_CHARS) { current = addPair(); rows.push(current); }
+      current.en = (current.en + " " + text).trim();
+      current.enEl.textContent = current.en;
+      current.dirty = true;
+      if (stick) scrollDown();
+      pump();
+    }
+    if (endsSentence) current = null;
   }
 
   // ---------- speech recognition ----------
@@ -220,6 +235,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   let consumed = 0;         // characters of this session's transcript already shown
   let interim = "";
   let silenceTimer = null;
+  let pauseTimer = null;    // a longer pause closes the sentence
   let restartFails = 0;
   let wakeLock = null;
 
@@ -249,7 +265,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     clearTimeout(silenceTimer); silenceTimer = null;
     const text = interim; interim = "";
     renderLive("");
-    commit(text);
+    commit(text, false);
   }
 
   function startSession() {
@@ -286,7 +302,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       const re = /[.?!]["')\]]?\s+(?=\S)/g;
       let m, cut = 0;
       while ((m = re.exec(rest))) cut = m.index + m[0].length;
-      if (cut > 0) { commit(rest.slice(0, cut)); consumed += cut; rest = rest.slice(cut); }
+      if (cut > 0) { commit(rest.slice(0, cut), true); consumed += cut; rest = rest.slice(cut); }
       // Long, fast speech: do not wait for the sentence to end. Once enough words have piled up,
       // translate them now (up to the last comma if there is one) and keep only the newest word,
       // which the recognizer may still be revising.
@@ -295,11 +311,12 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         let take = words.slice(0, words.length - 1).join("").length;
         const comma = rest.lastIndexOf(",", take);
         if (comma > 0 && (rest.slice(0, comma).match(/\S+/g) || []).length >= 4) take = comma + 1;
-        commit(rest.slice(0, take)); consumed += take; rest = rest.slice(take);
+        commit(rest.slice(0, take), false); consumed += take; rest = rest.slice(take);
       }
       interim = rest;
       renderLive(interim);
       clearTimeout(silenceTimer);
+      if (rest.trim() || cut > 0) clearTimeout(pauseTimer);
       if (interim.trim()) {
         const upTo = full.length;
         // After a short pause, translate what was said so far. Listening keeps going.
@@ -307,6 +324,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
           if (my !== sessionId) return;
           consumed = upTo;
           flushInterim();
+          pauseTimer = setTimeout(() => { current = null; }, PAUSE_MS - SILENCE_MS);
         }, SILENCE_MS);
       }
     };
@@ -358,7 +376,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   };
 
   $("clearBtn").onclick = () => {
-    queue.length = 0; interim = ""; liveEl = null;
+    rows.length = 0; current = null; interim = ""; liveEl = null;
     lines.textContent = "";
     const p = document.createElement("p");
     p.className = "hint"; p.id = "example";
