@@ -98,7 +98,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   const micBtn = $("micBtn"), status = $("status"), statusText = $("statusText");
   const board = $("board"), lines = $("lines"), notice = $("notice");
 
-  const SILENCE_MS = 900;    // commit a phrase after this long without new words
+  const SILENCE_MS = 700; 
+  const CHUNK_WORDS = 7;     // translate after this many words even if the sentence is not finished
+    // commit a phrase after this long without new words
   const MAX_CHARS = 450;     // the translation service takes about 500 bytes per request
 
   // ---------- display ----------
@@ -285,6 +287,16 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       let m, cut = 0;
       while ((m = re.exec(rest))) cut = m.index + m[0].length;
       if (cut > 0) { commit(rest.slice(0, cut)); consumed += cut; rest = rest.slice(cut); }
+      // Long, fast speech: do not wait for the sentence to end. Once enough words have piled up,
+      // translate them now (up to the last comma if there is one) and keep only the newest word,
+      // which the recognizer may still be revising.
+      const words = rest.match(/\S+\s*/g) || [];
+      if (words.length >= CHUNK_WORDS + 1) {
+        let take = words.slice(0, words.length - 1).join("").length;
+        const comma = rest.lastIndexOf(",", take);
+        if (comma > 0 && (rest.slice(0, comma).match(/\S+/g) || []).length >= 4) take = comma + 1;
+        commit(rest.slice(0, take)); consumed += take; rest = rest.slice(take);
+      }
       interim = rest;
       renderLive(interim);
       clearTimeout(silenceTimer);
