@@ -96,7 +96,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   const micBtn = $("micBtn"), status = $("status"), statusText = $("statusText");
   const board = $("board"), lines = $("lines"), notice = $("notice");
 
-  const SILENCE_MS = 1400;   // commit a phrase after this long without new words
+  const SILENCE_MS = 900;    // commit a phrase after this long without new words
   const MAX_CHARS = 450;     // the translation service takes about 500 bytes per request
 
   // ---------- display ----------
@@ -213,7 +213,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   let rec = null;
   let wantListening = false;
   let sessionId = 0;        // results from an abandoned session are ignored
-  let committed = 0;        // how many final results of this session are already shown
+  let consumed = 0;         // characters of this session's transcript already shown
   let interim = "";
   let silenceTimer = null;
   let restartFails = 0;
@@ -242,7 +242,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   function startSession() {
     const my = ++sessionId;
-    committed = 0; interim = "";
+    consumed = 0; interim = "";
     rec = new SR();
     rec.lang = "en-US";
     rec.continuous = true;
@@ -253,23 +253,31 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     rec.onresult = (ev) => {
       if (my !== sessionId) return;
-      let live = "";
-      for (let i = committed; i < ev.results.length; i++) {
-        const r = ev.results[i];
-        const t = r[0] ? r[0].transcript : "";
-        if (r.isFinal) { if (i === committed) { commit(t); committed = i + 1; } else live += t; }
-        else live += t;
+      // The whole session stays open; we only remember how much of its text is already shown.
+      let full = "";
+      for (let i = 0; i < ev.results.length; i++) full += ev.results[i][0] ? ev.results[i][0].transcript : "";
+      if (full.length < consumed) consumed = full.length;   // the recognizer revised or reset its text
+      let rest = full.slice(consumed);
+      if (consumed > 0 && /\S/.test(full[consumed - 1] || "") && /^\S/.test(rest)) {
+        const sp = rest.search(/\s/);                       // landed mid-word after a revision: skip to the next word
+        const skip = sp < 0 ? rest.length : sp;
+        consumed += skip; rest = rest.slice(skip);
       }
-      interim = live;
+      // A finished sentence followed by more speech is translated right away.
+      const re = /[.?!]["')\]]?\s+(?=\S)/g;
+      let m, cut = 0;
+      while ((m = re.exec(rest))) cut = m.index + m[0].length;
+      if (cut > 0) { commit(rest.slice(0, cut)); consumed += cut; rest = rest.slice(cut); }
+      interim = rest;
       renderLive(interim);
       clearTimeout(silenceTimer);
       if (interim.trim()) {
-        // iOS often never marks a phrase final: after a pause, take what we have and start a fresh session.
+        const upTo = full.length;
+        // After a short pause, translate what was said so far. Listening keeps going.
         silenceTimer = setTimeout(() => {
           if (my !== sessionId) return;
-          sessionId++;               // ignore anything else this session reports
+          consumed = upTo;
           flushInterim();
-          try { rec.stop(); } catch (e) {}
         }, SILENCE_MS);
       }
     };
@@ -300,7 +308,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
             setStatus("收音中斷了，請再按一次「開始聆聽」。", false);
           } else rec.onend();
         }
-      }, 250);
+      }, 0);
     };
 
     rec.start();
