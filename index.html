@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>英中即時字幕</title>
+<style>
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --fg: #14202b; --muted: #5d6b78;
+  --line: #dde2e8; --accent: #0b6e8f; --accent-fg: #ffffff; --live: #c2410c;
+  --scale: 1;
+  --font-zh: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-en: -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e151b; --surface: #17212a; --fg: #eef3f7; --muted: #9aa9b6;
+    --line: #2a3742; --accent: #58c1e0; --accent-fg: #06222c; --live: #fb923c;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-zh); font-size: 16px; line-height: 1.5;
+  display: flex; flex-direction: column;
+  -webkit-text-size-adjust: 100%;
+}
+[hidden] { display: none !important; }
+.bar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.status { color: var(--muted); font-size: 14px; flex: 1 1 100%; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+.status.on .dot { background: var(--live); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .status.on .dot { animation: none; } }
+.controls { display: flex; gap: 8px; align-items: center; flex: 1 1 auto; }
+.controls .grow { flex: 1 1 auto; }
+button {
+  font: inherit; font-size: 16px; font-weight: 500; cursor: pointer;
+  border-radius: 10px; padding: 10px 14px; min-height: 44px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--fg); touch-action: manipulation;
+}
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); padding-inline: 20px; }
+button:disabled { opacity: .5; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.board {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 20px max(16px, env(safe-area-inset-right, 0px)) calc(28px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.lines { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.pair { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.en { font-family: var(--font-en); font-size: calc(18px * var(--scale)); line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+.zh { font-size: calc(clamp(28px, 4.8vw, 48px) * var(--scale)); font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.zh.wait { color: var(--muted); font-size: 16px; font-weight: 400; }
+.zh.err { color: var(--live); font-size: 16px; font-weight: 400; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.zh.err button { font-size: 14px; padding: 4px 12px; min-height: 36px; }
+.pair.live .en { color: var(--fg); font-style: italic; }
+.tag { align-self: flex-start; font-size: 12px; letter-spacing: .08em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
+.hint { color: var(--muted); font-size: 15px; margin: 8px 0 0; }
+.notice { max-width: 1100px; margin: 0 auto 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 14px; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="controls">
+    <button id="micBtn" type="button" class="primary">開始聆聽</button>
+    <span class="grow"></span>
+    <button id="smallerBtn" type="button" aria-label="縮小字體">A−</button>
+    <button id="biggerBtn" type="button" aria-label="放大字體">A＋</button>
+    <button id="clearBtn" type="button">清除</button>
+  </div>
+  <div class="status" id="status"><span class="dot"></span><span id="statusText">按「開始聆聽」後開始收音</span></div>
+</header>
+
+<main class="board" id="board">
+  <div class="notice" id="notice" hidden></div>
+  <div class="lines" id="lines">
+    <div class="pair" id="example">
+      <span class="tag">範例</span>
+      <div class="en">Thanks everyone for joining. Let's get started with today's agenda.</div>
+      <div class="zh">感謝各位參加，我們開始今天的議程吧。</div>
+      <p class="hint">按「開始聆聽」並允許使用麥克風，聽到的英文與繁體中文翻譯會一句一句出現在這裡。</p>
+    </div>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const micBtn = $("micBtn"), status = $("status"), statusText = $("statusText");
+  const board = $("board"), lines = $("lines"), notice = $("notice");
+
+  const SILENCE_MS = 1400;   // commit a phrase after this long without new words
+  const MAX_CHARS = 450;     // the translation service takes about 500 bytes per request
+
+  // ---------- display ----------
+  let scale = 1;
+  try { scale = parseFloat(localStorage.getItem("captionScale")) || 1; } catch (e) {}
+  const applyScale = (s) => {
+    scale = Math.min(2.2, Math.max(0.7, Math.round(s * 100) / 100));
+    document.documentElement.style.setProperty("--scale", scale);
+    try { localStorage.setItem("captionScale", String(scale)); } catch (e) {}
+  };
+  applyScale(scale);
+  $("smallerBtn").onclick = () => applyScale(scale - 0.15);
+  $("biggerBtn").onclick = () => applyScale(scale + 0.15);
+
+  const setStatus = (text, on) => { statusText.textContent = text; status.classList.toggle("on", !!on); };
+  const showNotice = (text) => { notice.textContent = text; notice.hidden = !text; };
+  const nearBottom = () => board.scrollHeight - board.scrollTop - board.clientHeight < 140;
+  const scrollDown = () => { board.scrollTop = board.scrollHeight; };
+  const dropExample = () => { const ex = $("example"); if (ex) ex.remove(); };
+
+  let liveEl = null;
+  function renderLive(text) {
+    text = (text || "").trim();
+    if (!text) { if (liveEl) { liveEl.remove(); liveEl = null; } return; }
+    const stick = nearBottom();
+    if (!liveEl) {
+      dropExample();
+      liveEl = document.createElement("div");
+      liveEl.className = "pair live";
+      liveEl.appendChild(document.createElement("div")).className = "en";
+    }
+    lines.append(liveEl);
+    liveEl.firstChild.textContent = text;
+    if (stick) scrollDown();
+  }
+
+  function addPair(en) {
+    dropExample();
+    const stick = nearBottom();
+    const pair = document.createElement("div"); pair.className = "pair";
+    const enEl = document.createElement("div"); enEl.className = "en"; enEl.textContent = en;
+    const zhEl = document.createElement("div"); zhEl.className = "zh wait"; zhEl.textContent = "翻譯中…";
+    pair.append(enEl, zhEl);
+    if (liveEl && liveEl.parentNode) lines.insertBefore(pair, liveEl); else lines.append(pair);
+    if (stick) scrollDown();
+    return zhEl;
+  }
+
+  // ---------- translation (MyMemory, free, no key) ----------
+  function splitChunks(text) {
+    const out = [];
+    let rest = text;
+    while (rest.length > MAX_CHARS) {
+      let cut = rest.lastIndexOf(" ", MAX_CHARS);
+      if (cut < 100) cut = MAX_CHARS;
+      out.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) out.push(rest);
+    return out;
+  }
+
+  async function translateChunk(text) {
+    const url = "https://api.mymemory.translated.net/get?langpair=en%7Czh-TW&q=" + encodeURIComponent(text);
+    const res = await fetch(url);
+    if (res.status === 429) throw { code: "quota" };
+    if (!res.ok) throw { code: "http" };
+    const data = await res.json();
+    const out = data && data.responseData && data.responseData.translatedText;
+    if (String(data.responseStatus) === "429" || /MYMEMORY WARNING|QUOTA/i.test(out || "")) throw { code: "quota" };
+    if (String(data.responseStatus) !== "200" || !out) throw { code: "http" };
+    return out;
+  }
+
+  const queue = [];
+  let busy = false;
+  async function pump() {
+    if (busy) return;
+    const job = queue.shift();
+    if (!job) return;
+    busy = true;
+    const { en, zhEl } = job;
+    zhEl.className = "zh wait"; zhEl.textContent = "翻譯中…";
+    try {
+      const parts = [];
+      for (const chunk of splitChunks(en)) parts.push(await translateChunk(chunk));
+      const stick = nearBottom();
+      zhEl.className = "zh"; zhEl.textContent = parts.join("");
+      if (stick) scrollDown();
+    } catch (e) {
+      zhEl.className = "zh err";
+      if (e && e.code === "quota") {
+        zhEl.textContent = "今天的免費翻譯額度用完了。";
+        showNotice("免費翻譯服務今天的額度已用完，目前只會顯示英文原文，明天會自動恢復。");
+      } else {
+        zhEl.textContent = navigator.onLine === false ? "沒有網路，無法翻譯。" : "翻譯失敗。";
+        const retry = document.createElement("button");
+        retry.type = "button"; retry.textContent = "重試";
+        retry.onclick = () => { queue.push({ en, zhEl }); pump(); };
+        zhEl.append(retry);
+      }
+    } finally { busy = false; pump(); }
+  }
+
+  function commit(text) {
+    text = (text || "").replace(/\s+/g, " ").trim();
+    if (!text) return;
+    queue.push({ en: text, zhEl: addPair(text) });
+    pump();
+  }
+
+  // ---------- speech recognition ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  let wantListening = false;
+  let sessionId = 0;        // results from an abandoned session are ignored
+  let committed = 0;        // how many final results of this session are already shown
+  let interim = "";
+  let silenceTimer = null;
+  let restartFails = 0;
+  let wakeLock = null;
+
+  async function keepAwake(on) {
+    try {
+      if (on && navigator.wakeLock && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      } else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+    } catch (e) {}
+  }
+
+  function updateButton() {
+    micBtn.textContent = wantListening ? "停止" : "開始聆聽";
+    micBtn.classList.toggle("primary", !wantListening);
+  }
+
+  function flushInterim() {
+    clearTimeout(silenceTimer); silenceTimer = null;
+    const text = interim; interim = "";
+    renderLive("");
+    commit(text);
+  }
+
+  function startSession() {
+    const my = ++sessionId;
+    committed = 0; interim = "";
+    rec = new SR();
+    rec.lang = "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
+    rec.onstart = () => { if (my === sessionId) { restartFails = 0; setStatus("聆聽中", true); } };
+
+    rec.onresult = (ev) => {
+      if (my !== sessionId) return;
+      let live = "";
+      for (let i = committed; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        const t = r[0] ? r[0].transcript : "";
+        if (r.isFinal) { if (i === committed) { commit(t); committed = i + 1; } else live += t; }
+        else live += t;
+      }
+      interim = live;
+      renderLive(interim);
+      clearTimeout(silenceTimer);
+      if (interim.trim()) {
+        // iOS often never marks a phrase final: after a pause, take what we have and start a fresh session.
+        silenceTimer = setTimeout(() => {
+          if (my !== sessionId) return;
+          sessionId++;               // ignore anything else this session reports
+          flushInterim();
+          try { rec.stop(); } catch (e) {}
+        }, SILENCE_MS);
+      }
+    };
+
+    rec.onerror = (ev) => {
+      const err = ev.error;
+      if (err === "not-allowed" || err === "service-not-allowed") {
+        wantListening = false; updateButton(); keepAwake(false);
+        setStatus("沒有麥克風或語音辨識的許可。請到「設定 › Safari › 麥克風」允許，並確認已開啟「設定 › 一般 › 鍵盤 › 啟用聽寫」。", false);
+      } else if (err === "audio-capture") {
+        wantListening = false; updateButton(); keepAwake(false);
+        setStatus("找不到麥克風。", false);
+      } else if (err === "network") {
+        setStatus("語音辨識需要網路連線，正在重試…", false);
+      }
+      // "no-speech" and "aborted" just fall through to onend, which restarts.
+    };
+
+    rec.onend = () => {
+      if (my === sessionId) { sessionId++; flushInterim(); }
+      if (!wantListening) { setStatus("已停止。按「開始聆聽」繼續。", false); return; }
+      setTimeout(() => {
+        if (!wantListening) return;
+        try { startSession(); }
+        catch (e) {
+          if (++restartFails > 3) {
+            wantListening = false; updateButton(); keepAwake(false);
+            setStatus("收音中斷了，請再按一次「開始聆聽」。", false);
+          } else rec.onend();
+        }
+      }, 250);
+    };
+
+    rec.start();
+  }
+
+  micBtn.onclick = () => {
+    if (!SR) return;
+    if (wantListening) {
+      wantListening = false; updateButton(); keepAwake(false);
+      try { rec.stop(); } catch (e) {}
+      return;
+    }
+    wantListening = true; restartFails = 0; updateButton();
+    setStatus("正在開啟麥克風…", false);
+    try { startSession(); keepAwake(true); }
+    catch (e) { wantListening = false; updateButton(); setStatus("無法開始收音，請再試一次。", false); }
+  };
+
+  $("clearBtn").onclick = () => {
+    queue.length = 0; interim = ""; liveEl = null;
+    lines.textContent = "";
+    const p = document.createElement("p");
+    p.className = "hint"; p.id = "example";
+    p.textContent = "已清除。聽到的英文與中文翻譯會出現在這裡。";
+    lines.append(p);
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && wantListening) keepAwake(true);
+    if (document.visibilityState === "hidden" && wantListening) {
+      wantListening = false; updateButton();
+      try { rec.stop(); } catch (e) {}
+    }
+  });
+
+  if (!SR) {
+    micBtn.disabled = true;
+    setStatus("這個瀏覽器不支援語音辨識。iPhone 請用 Safari 開啟（iOS 14.5 以上）。", false);
+  } else if (!window.isSecureContext) {
+    micBtn.disabled = true;
+    setStatus("需要透過 https 網址開啟才能收音。", false);
+  }
+})();
+</script>
+</body>
+</html>
